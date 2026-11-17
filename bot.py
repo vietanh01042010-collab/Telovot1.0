@@ -2123,25 +2123,29 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def run_dummy_web_server():
-    """Khởi chạy HTTP server mini để Render Free Web Service nhận diện PORT và không bao giờ tắt bot"""
-    async def handle_ping(request):
-        return web.Response(text="Bot Telegram is running healthy 24/7!")
+    """Khởi chạy HTTP server mini ngay lập tức khi bot start để Render nhận diện PORT thành công 100%"""
+    try:
+        async def handle_ping(request):
+            return web.Response(text="Bot Telegram is running healthy 24/7!", content_type="text/plain")
 
-    server_app = web.Application()
-    server_app.router.add_get("/", handle_ping)
-    server_app.router.add_get("/health", handle_ping)
+        server_app = web.Application()
+        server_app.router.add_get("/", handle_ping)
+        server_app.router.add_get("/health", handle_ping)
 
-    port = int(os.environ.get("PORT", 8080))
-    runner = web.AppRunner(server_app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    logger.info(f"Đã mở Dummy Web Server trên port {port} để Render Web Service luôn Live 24/7.")
+        port = int(os.environ.get("PORT", 8080))
+        runner = web.AppRunner(server_app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        await site.start()
+        logger.info(f"===> HEALTH CHECK HTTP SERVER ĐÃ MỞ TẠI 0.0.0.0:{port} <===")
+    except Exception as e:
+        logger.error(f"Lỗi khởi chạy Dummy Web Server: {e}")
 
 
 async def post_init(application):
-    """Chạy song song HTTP Web Server cùng với Bot Polling"""
-    asyncio.create_task(run_dummy_web_server())
+    """Kích hoạt web server ngay khi Application khởi tạo"""
+    await run_dummy_web_server()
+
 
 
 def main():

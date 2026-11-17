@@ -1,13 +1,18 @@
 FROM python:3.11-slim
 
-# Cài đặt ffmpeg để yt-dlp xử lý nhạc mp3
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ffmpeg curl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+ENV PORT=8080
+ENV PYTHONUNBUFFERED=1
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+EXPOSE 8080
+
 CMD ["python", "bot.py"]
+
