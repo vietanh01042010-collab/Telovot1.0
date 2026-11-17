@@ -622,38 +622,55 @@ async def handle_music_format_callback(update: Update, context: ContextTypes.DEF
 
 
 # ==========================================
-# PHẦN 2.5: CHATBOT ZALO AI (GEMINI AI TỰ ĐỘNG PHẢN HỒI KHI ĐƯỢC TAG @)
+# PHẦN 2.5: CHATBOT ZALO AI (TỰ ĐỘNG PHẢN HỒI KHI ĐƯỢC TAG @)
+# Tự động dùng AI phản hồi thông minh, KHÔNG CẦN NHẬP API KEY THỦ CÔNG
 # ==========================================
 
-def call_gemini_api(prompt: str, api_key: str) -> str:
-    """Gọi Gemini API để tạo câu trả lời thông minh"""
-    if not api_key:
-        return "⚠️ Chưa cấu hình Gemini API Key."
-    
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-    payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": f"Bạn là trợ lý ảo thông minh trên Zalo. Hãy trả lời thân thiện, ngắn gọn, súc tích (dưới 100 từ) cho câu hỏi sau:\n{prompt}"}
+def call_gemini_api(prompt: str, api_key: str = None) -> str:
+    """Tạo câu trả lời AI thông minh tự động (hỗ trợ cả Gemini API Key lẫn AI Engine miễn phí)"""
+    # 1. Nếu có Gemini API Key hợp lệ, ưu tiên gọi Gemini API
+    if api_key and api_key.strip():
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key.strip()}"
+            payload = {
+                "contents": [
+                    {
+                        "parts": [
+                            {"text": f"Bạn là trợ lý ảo thông minh trên Zalo. Hãy trả lời thân thiện, ngắn gọn, súc tích (dưới 80 từ) cho câu hỏi sau:\n{prompt}"}
+                        ]
+                    }
                 ]
             }
-        ]
-    }
+            resp = requests.post(url, json=payload, timeout=12)
+            data = resp.json()
+            if "candidates" in data and len(data["candidates"]) > 0:
+                content = data["candidates"][0].get("content", {})
+                parts = content.get("parts", [])
+                if parts and "text" in parts[0]:
+                    return parts[0]["text"].strip()
+        except Exception as e:
+            logger.warning(f"Gemini API gặp lỗi: {e}, chuyển sang Free AI Engine fallback...")
+
+    # 2. Tự động dùng AI Engine thông minh (OpenAI/Pollinations) không cần API key
     try:
-        resp = requests.post(url, json=payload, timeout=15)
-        data = resp.json()
-        if "candidates" in data and len(data["candidates"]) > 0:
-            content = data["candidates"][0].get("content", {})
-            parts = content.get("parts", [])
-            if parts and "text" in parts[0]:
-                return parts[0]["text"].strip()
-        if "error" in data:
-            return f"❌ Lỗi Gemini API: {data['error'].get('message', 'Không xác định')}"
-    except Exception as e:
-        logger.error(f"Lỗi gọi Gemini API: {e}")
-        return f"❌ Lỗi kết nối AI: {e}"
-    return "Xin lỗi, tôi chưa thể trả lời câu hỏi này lúc này."
+        url = "https://text.pollinations.ai/"
+        system_prompt = "Bạn là trợ lý ảo thông minh trên Zalo. Hãy trả lời tiếng Việt thân thiện, tự nhiên, ngắn gọn (dưới 80 từ)."
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            "model": "openai",
+            "seed": 42
+        }
+        resp = requests.post(url, json=payload, timeout=12)
+        if resp.status_code == 200 and resp.text.strip():
+            return resp.text.strip()
+    except Exception as e_poll:
+        logger.error(f"Lỗi AI Engine fallback: {e_poll}")
+
+    return "Chào bạn, mình là AI Chatbot Zalo! Bạn cần mình hỗ trợ điều gì không?"
+
 
 
 class ZaloAIChatbotListener(ZaloAPI):
@@ -924,11 +941,12 @@ async def handle_cb_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply_markup = build_chatbot_group_keyboard(group_list, set(), page=0)
     prompt_text = (
-        f"👥 <b>[CHATBOT AI - BƯỚC 3/4] CHỌN NHÓM ĐỂ AI TRẢ LỜI</b>\n"
+        f"👥 <b>[CHATBOT AI - BƯỚC 3/3] CHỌN NHÓM ĐỂ AI TRẢ LỜI</b>\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         f"🔍 Tìm thấy: <b>{len(group_list)} nhóm</b>\n"
-        "👉 Bấm chọn những nhóm bạn muốn bật AI phản hồi khi được tag @, sau đó bấm <b>'🚀 Tiếp Tục (Nhập API Key)'</b>:"
+        "👉 Bấm chọn những nhóm bạn muốn AI tự động trả lời khi được tag @, sau đó bấm <b>'🚀 XÁC NHẬN BẬT AI CHATBOT'</b>:"
     )
+
     await status_msg.edit_text(prompt_text, parse_mode="HTML", reply_markup=reply_markup)
 
 
@@ -984,11 +1002,12 @@ async def handle_cb_use_saved(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     reply_markup = build_chatbot_group_keyboard(group_list, valid_selected, page=0)
     prompt_text = (
-        f"👥 <b>[CHATBOT AI - BƯỚC 3/4] CHỌN NHÓM ĐỂ AI TRẢ LỜI</b>\n"
+        f"👥 <b>[CHATBOT AI - BƯỚC 3/3] CHỌN NHÓM ĐỂ AI TRẢ LỜI</b>\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         f"🔍 Tìm thấy: <b>{len(group_list)} nhóm</b> | Đang chọn: <b>{len(valid_selected)} nhóm</b>\n\n"
-        "👉 Bấm chọn nhóm và nhấn <b>'🚀 Tiếp Tục (Nhập API Key)'</b>:"
+        "👉 Bấm chọn nhóm và nhấn <b>'🚀 XÁC NHẬN BẬT AI CHATBOT'</b>:"
     )
+
     await status_msg.edit_text(prompt_text, parse_mode="HTML", reply_markup=reply_markup)
 
 
@@ -1029,14 +1048,14 @@ def build_chatbot_group_keyboard(group_list: List[dict], selected_ids: Set[str],
     keyboard.append([toggle_all_btn])
 
     keyboard.append([
-        InlineKeyboardButton(f"🚀 Tiếp Tục (Nhập API Key) ({len(selected_ids)} nhóm)", callback_data="cb_grp_confirm")
+        InlineKeyboardButton(f"🚀 XÁC NHẬN BẬT AI CHATBOT ({len(selected_ids)} nhóm)", callback_data="cb_grp_confirm")
     ])
 
     return InlineKeyboardMarkup(keyboard)
 
 
 async def handle_cb_group_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xử lý nút bấm chọn nhóm Chatbot AI"""
+    """Xử lý nút bấm chọn nhóm Chatbot AI - BẬT NGAY TỰ ĐỘNG KHÔNG CẦN NHẬP KEY"""
     query = update.callback_query
     await query.answer()
 
@@ -1056,26 +1075,11 @@ async def handle_cb_group_callback(update: Update, context: ContextTypes.DEFAULT
             await query.answer("⚠️ Bạn chưa chọn nhóm nào! Vui lòng chọn ít nhất 1 nhóm.", show_alert=True)
             return
 
-        user_data["state"] = "CB_WAITING_GEMINI_KEY"
+        # Tự động lấy key đã lưu hoặc tự kích hoạt AI Engine tích hợp sẵn
         saved_key = user_data.get("gemini_key") or ""
-
-        keyboard = []
-        if saved_key:
-            keyboard.append([InlineKeyboardButton(f"⚡ Dùng Key Đã Lưu ({saved_key[:8]}...)", callback_data="cb_use_saved_key")])
-        keyboard.append([InlineKeyboardButton("❌ Hủy bỏ", callback_data="refresh_menu")])
-
-        prompt = (
-            f"✅ Đã chọn <b>{len(selected_ids)} nhóm</b>!\n\n"
-            "🔑 <b>[CHATBOT AI - BƯỚC 4/4] NHẬP GEMINI API KEY</b>\n"
-            "━━━━━━━━━━━━━━━━━━━\n"
-            "Vui lòng gửi <b>Gemini API Key</b> của bạn vào đây:\n"
-            "<i>(Nếu chưa có, bạn có thể lấy miễn phí tại aistudio.google.com/app/apikey)</i>"
-        )
-        try:
-            await query.edit_message_text(prompt, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
-        except BadRequest:
-            pass
+        await activate_chatbot_session(user_id, user_data, saved_key, query.message, is_edit=True)
         return
+
 
     if data.startswith("cb_grp_toggle_"):
         parts = data.split("_")
