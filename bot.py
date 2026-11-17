@@ -44,6 +44,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
 CONFIG_FILE = os.path.join(BASE_DIR, "saved_treo_configs.json")
 AUTOCHAT_CONFIG_FILE = os.path.join(BASE_DIR, "saved_autochat_configs.json")
+CHATBOT_CONFIG_FILE = os.path.join(BASE_DIR, "saved_chatbot_configs.json")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 USER_STATES: Dict[int, dict] = {}
@@ -53,6 +54,9 @@ RUNNING_TREO_SESSIONS: Dict[int, dict] = {}
 
 # Quản lý phiên Auto Chat (cầu nối trực tiếp nhắn tin): { user_id: { "client": ZaloAPI, "group_ids": [...], "imei": "...", "groups_info": [...] } }
 ACTIVE_AUTOCHAT_SESSIONS: Dict[int, dict] = {}
+
+# Quản lý phiên AI Chatbot Zalo (Gemini AI tự động trả lời khi được tag @): { user_id: { "client": ZaloAPI, "group_ids": [...], "gemini_key": "...", "thread": threading.Thread, "running": bool } }
+ACTIVE_CHATBOT_SESSIONS: Dict[int, dict] = {}
 
 # Bảng màu chuẩn được Zalo hỗ trợ chính thức
 COLOR_OPTIONS = [
@@ -146,6 +150,36 @@ def get_user_autochat_config(user_id: int) -> dict:
     return all_configs.get(str(user_id))
 
 
+def load_saved_chatbot_configs() -> dict:
+    """Tải cấu hình chatbot AI Zalo từ file JSON"""
+    if os.path.exists(CHATBOT_CONFIG_FILE):
+        try:
+            with open(CHATBOT_CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Lỗi đọc file chatbot: {e}")
+    return {}
+
+
+def save_user_chatbot_config(user_id: int, config_data: dict):
+    """Lưu cấu hình chatbot AI Zalo (IMEI, cookies, groups, gemini_key)"""
+    try:
+        all_configs = load_saved_chatbot_configs()
+        to_save = dict(config_data)
+        if isinstance(to_save.get("selected_group_ids"), set):
+            to_save["selected_group_ids"] = list(to_save["selected_group_ids"])
+        all_configs[str(user_id)] = to_save
+        with open(CHATBOT_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(all_configs, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Lỗi ghi cấu hình chatbot: {e}")
+
+
+def get_user_chatbot_config(user_id: int) -> dict:
+    all_configs = load_saved_chatbot_configs()
+    return all_configs.get(str(user_id))
+
+
 def parse_cookies_input(cookie_str: str) -> dict:
     """Parser đa năng cho cookies Zalo"""
     if not cookie_str:
@@ -212,21 +246,35 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     is_running_treo = user_id in RUNNING_TREO_SESSIONS and not RUNNING_TREO_SESSIONS[user_id]["task"].done()
     is_autochat_on = user_id in ACTIVE_AUTOCHAT_SESSIONS
+    is_chatbot_on = user_id in ACTIVE_CHATBOT_SESSIONS and ACTIVE_CHATBOT_SESSIONS[user_id].get("running", False)
     saved_cfg = get_user_saved_config(user_id)
 
     autochat_status = "🟢 Đang bật" if is_autochat_on else "⚪ Đang tắt"
+    chatbot_status = "🟢 Đang bật" if is_chatbot_on else "⚪ Đang tắt"
     treo_status = "🟢 Đang chạy" if is_running_treo else "⚪ Đang dừng"
 
     text = (
         "🤖 <b>BẢNG ĐIỀU KHIỂN BOT</b>\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        f"• Trạng thái Auto Chat: <b>{autochat_status}</b>\n"
-        f"• Trạng thái Treo lặp: <b>{treo_status}</b>\n"
-        f"• Cấu hình treo đã lưu: <b>{'💾 Đã có thiết lập' if saved_cfg else '❌ Chưa lưu'}</b>\n\n"
-        "Vui lòng chọn thao tác bên dưới:"
+        f"• 🧠 Chatbot AI Zalo: <b>{chatbot_status}</b>\n"
+        f"• 💬 Auto Chat (Cầu nối): <b>{autochat_status}</b>\n"
+        f"• 🚀 Treo Zalo (Lặp tin): <b>{treo_status}</b>\n"
+        f"• 💾 Cấu hình treo đã lưu: <b>{'Đã có' if saved_cfg else 'Chưa lưu'}</b>\n\n"
+        "Vui lòng chọn tính năng bên dưới:"
     )
 
-    # Hàng Auto Chat (tính năng nhắn gì gửi nấy)
+    # Hàng 1: Chatbot AI Zalo (Gemini)
+    if is_chatbot_on:
+        row_chatbot = [
+            InlineKeyboardButton("🧠 Trạng Thái AI Chatbot", callback_data="chatbot_status"),
+            InlineKeyboardButton("🛑 Tắt AI Chatbot", callback_data="stop_chatbot")
+        ]
+    else:
+        row_chatbot = [
+            InlineKeyboardButton("🧠 Bật Chatbot AI Zalo (Gemini)", callback_data="start_chatbot")
+        ]
+
+    # Hàng 2: Auto Chat (tính năng nhắn gì gửi nấy)
     if is_autochat_on:
         row_autochat = [
             InlineKeyboardButton("💬 Trạng Thái Auto Chat", callback_data="autochat_status"),
@@ -237,7 +285,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("💬 Bật Auto Chat (Cầu Nối)", callback_data="start_autochat")
         ]
 
-    # Hàng Treo lặp
+    # Hàng 3: Treo lặp
     row_treo = []
     if is_running_treo:
         row_treo.append(InlineKeyboardButton("⚙️ Tùy Chỉnh Treo", callback_data="cfg_open"))
@@ -252,7 +300,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("🔄 Làm mới Menu", callback_data="refresh_menu")
     ]
 
-    keyboard = [row_autochat, row_treo, row_manage, row_extra]
+    keyboard = [row_chatbot, row_autochat, row_treo, row_manage, row_extra]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     if update.callback_query:
@@ -263,6 +311,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
     else:
         await update.message.reply_text(text=text, parse_mode="HTML", reply_markup=reply_markup)
+
 
 
 # ==========================================
@@ -573,9 +622,662 @@ async def handle_music_format_callback(update: Update, context: ContextTypes.DEF
 
 
 # ==========================================
-# PHẦN 2: AUTO CHAT (CẦU NỐI TELEGRAM -> ZALO)
-# Nhắn gì bên Telegram -> Bot gửi y hệt vào các nhóm Zalo đã chọn!
+# PHẦN 2.5: CHATBOT ZALO AI (GEMINI AI TỰ ĐỘNG PHẢN HỒI KHI ĐƯỢC TAG @)
 # ==========================================
+
+def call_gemini_api(prompt: str, api_key: str) -> str:
+    """Gọi Gemini API để tạo câu trả lời thông minh"""
+    if not api_key:
+        return "⚠️ Chưa cấu hình Gemini API Key."
+    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": f"Bạn là trợ lý ảo thông minh trên Zalo. Hãy trả lời thân thiện, ngắn gọn, súc tích (dưới 100 từ) cho câu hỏi sau:\n{prompt}"}
+                ]
+            }
+        ]
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=15)
+        data = resp.json()
+        if "candidates" in data and len(data["candidates"]) > 0:
+            content = data["candidates"][0].get("content", {})
+            parts = content.get("parts", [])
+            if parts and "text" in parts[0]:
+                return parts[0]["text"].strip()
+        if "error" in data:
+            return f"❌ Lỗi Gemini API: {data['error'].get('message', 'Không xác định')}"
+    except Exception as e:
+        logger.error(f"Lỗi gọi Gemini API: {e}")
+        return f"❌ Lỗi kết nối AI: {e}"
+    return "Xin lỗi, tôi chưa thể trả lời câu hỏi này lúc này."
+
+
+class ZaloAIChatbotListener(ZaloAPI):
+    """Lớp kế thừa ZaloAPI để lắng nghe sự kiện tin nhắn trong nhóm Zalo"""
+    def __init__(self, imei=None, cookies=None, target_groups=None, gemini_key=None, *args, **kwargs):
+        super().__init__(imei=imei, cookies=cookies, auto_login=False, *args, **kwargs)
+        self.target_groups = set(str(g) for g in (target_groups or []))
+        self.gemini_key = gemini_key
+        self.is_running = True
+
+    def onMessage(self, mid=None, author_id=None, message=None, message_object=None, thread_id=None, thread_type=ThreadType.USER):
+        try:
+            if not self.is_running:
+                return
+
+            # Chỉ xử lý tin nhắn trong nhóm và nằm trong danh sách nhóm đã chọn
+            if thread_type != ThreadType.GROUP:
+                return
+            if str(thread_id) not in self.target_groups:
+                return
+
+            # Bỏ qua tin nhắn do chính bot gửi
+            my_id = str(self.user_id) if hasattr(self, "user_id") and self.user_id else str(self._state.cloud_id)
+            if str(author_id) == my_id:
+                return
+
+            msg_text = ""
+            if isinstance(message, str):
+                msg_text = message
+            elif message_object and hasattr(message_object, "content") and isinstance(message_object.content, str):
+                msg_text = message_object.content
+
+            # Kiểm tra xem có mention (tag @) bot hay không
+            is_mentioned = False
+            raw_mention = None
+            if message_object:
+                raw_mention = getattr(message_object, "mentions", None) or getattr(message_object, "mention", None)
+
+            if raw_mention:
+                try:
+                    if isinstance(raw_mention, str):
+                        raw_mention = json.loads(raw_mention)
+                    if isinstance(raw_mention, list):
+                        for m in raw_mention:
+                            if str(m.get("uid")) == my_id:
+                                is_mentioned = True
+                                break
+                except Exception:
+                    pass
+
+            # Fallback nếu văn bản chứa @
+            if not is_mentioned and ("@" in msg_text):
+                is_mentioned = True
+
+            if not is_mentioned:
+                return
+
+            logger.info(f"AI Chatbot phát hiện được tag trong nhóm {thread_id} bởi {author_id}: {msg_text}")
+
+            clean_prompt = re.sub(r'@[^\s]+', '', msg_text).strip()
+            if not clean_prompt:
+                clean_prompt = "Chào bạn!"
+
+            # Gọi Gemini AI
+            ai_reply = call_gemini_api(clean_prompt, self.gemini_key)
+
+            # Phản hồi lại và tag người hỏi
+            tag_text = "@Bạn "
+            full_reply_text = f"{tag_text}{ai_reply}"
+            mention_data = json.dumps([{
+                "pos": 0,
+                "len": len(tag_text.strip()),
+                "uid": str(author_id),
+                "type": 0
+            }])
+
+            reply_msg = Message(text=full_reply_text, mention=mention_data)
+            try:
+                self.sendMentionMessage(reply_msg, groupId=thread_id)
+            except Exception as e_send:
+                logger.warning(f"Lỗi sendMentionMessage: {e_send}, thử gửi tin nhắn thường...")
+                self.sendMessage(Message(text=full_reply_text), thread_id=thread_id, thread_type=ThreadType.GROUP)
+
+        except Exception as e:
+            logger.error(f"Lỗi trong onMessage AI Chatbot: {e}", exc_info=True)
+
+
+def start_chatbot_thread(user_id: int, client: ZaloAPI, group_ids: list, gemini_key: str):
+    """Chạy vòng lặp lắng nghe WebSocket trong một luồng riêng biệt"""
+    import threading
+
+    # Khởi tạo instance chuyên lắng nghe
+    listener = ZaloAIChatbotListener(
+        imei=client._imei,
+        cookies=client._state.get_cookies(),
+        target_groups=group_ids,
+        gemini_key=gemini_key
+    )
+    # Sao chép trạng thái đăng nhập từ client đã login thành công
+    listener._state = client._state
+    listener._imei = client._imei
+    listener.user_id = client.user_id
+    listener.cloud_id = client.cloud_id
+
+    def run_listen():
+        logger.info(f"Bắt đầu lắng nghe tin nhắn Zalo AI Chatbot cho user {user_id}...")
+        try:
+            listener.listen(reconnect=5)
+        except Exception as e:
+            logger.error(f"Luồng listen Zalo kết thúc: {e}")
+
+    t = threading.Thread(target=run_listen, daemon=True)
+    t.start()
+
+    ACTIVE_CHATBOT_SESSIONS[user_id] = {
+        "client": listener,
+        "group_ids": group_ids,
+        "gemini_key": gemini_key,
+        "thread": t,
+        "running": True
+    }
+
+
+async def chatbot_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Khởi động lệnh /chatbotzalo"""
+    user_id = update.effective_user.id
+
+    if user_id in ACTIVE_CHATBOT_SESSIONS and ACTIVE_CHATBOT_SESSIONS[user_id].get("running"):
+        session = ACTIVE_CHATBOT_SESSIONS[user_id]
+        num_groups = len(session.get("group_ids", []))
+        keyboard = [
+            [InlineKeyboardButton("🛑 Tắt AI Chatbot", callback_data="stop_chatbot")],
+            [InlineKeyboardButton("🔙 Quay lại Menu", callback_data="refresh_menu")]
+        ]
+        msg = (
+            "🧠 <b>CHATBOT AI ZALO ĐANG BẬT!</b>\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            f"👥 Đang hoạt động trên: <b>{num_groups} nhóm</b>\n"
+            "🤖 Bộ não: <b>Google Gemini AI</b>\n"
+            "👉 Khi có thành viên tag @tài khoản của bạn trong các nhóm này, bot sẽ tự động trả lời thông minh!\n\n"
+            "Muốn tắt, bạn bấm nút bên dưới hoặc gõ /stopchatbot."
+        )
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        if update.callback_query:
+            await update.callback_query.answer()
+            await update.callback_query.message.reply_text(msg, parse_mode="HTML", reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(msg, parse_mode="HTML", reply_markup=reply_markup)
+        return
+
+    saved_cb = get_user_chatbot_config(user_id)
+    saved_auto = get_user_autochat_config(user_id)
+    saved_treo = get_user_saved_config(user_id)
+
+    candidate = saved_cb if (saved_cb and saved_cb.get("zalo_imei")) else (saved_auto if (saved_auto and saved_auto.get("zalo_imei")) else saved_treo)
+
+    if candidate and candidate.get("zalo_imei") and candidate.get("zalo_cookies"):
+        imei = candidate.get("zalo_imei")
+        sel_count = len(candidate.get("selected_group_ids", []))
+        has_key = bool(candidate.get("gemini_key"))
+        text = (
+            "🧠 <b>CẤU HÌNH CHATBOT AI ZALO (GEMINI AI)</b>\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            "Tính năng: <b>Tự động phân tích và phản hồi thông minh bằng Gemini AI khi có người tag @ bạn trong nhóm Zalo!</b>\n\n"
+            f"📱 IMEI đã lưu: <code>{html.escape(imei)}</code>\n"
+            f"👥 Nhóm đã lưu: <b>{sel_count} nhóm</b>\n"
+            f"🔑 Gemini API Key: <b>{'Đã có sẵn' if has_key else 'Chưa có'}</b>\n\n"
+            "👉 Bạn muốn dùng tài khoản Zalo đã lưu hay đăng nhập mới?"
+        )
+        keyboard = [
+            [InlineKeyboardButton("⚡ Dùng Tài Khoản Đã Lưu", callback_data="cb_use_saved")],
+            [InlineKeyboardButton("🆕 Nhập IMEI & Cookie Mới", callback_data="cb_start_fresh")],
+            [InlineKeyboardButton("🔙 Quay lại Menu", callback_data="refresh_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        if update.callback_query:
+            await update.callback_query.answer()
+            await update.callback_query.edit_message_text(text=text, parse_mode="HTML", reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(text=text, parse_mode="HTML", reply_markup=reply_markup)
+        return
+
+    await chatbot_start_fresh(update, context)
+
+
+async def chatbot_start_fresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Nhập IMEI mới cho Chatbot Zalo"""
+    user_id = update.effective_user.id
+    USER_STATES[user_id] = {"state": "CB_WAITING_IMEI"}
+
+    prompt = (
+        "🧠 <b>[CHATBOT AI - BƯỚC 1/4] NHẬP IMEI ZALO</b>\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "Vui lòng gửi mã IMEI tài khoản Zalo của bạn:\n"
+        "<i>(Gõ /cancel để hủy)</i>"
+    )
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.message.reply_text(prompt, parse_mode="HTML")
+    else:
+        await update.message.reply_text(prompt, parse_mode="HTML")
+
+
+async def handle_cb_imei(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Nhận IMEI cho Chatbot Zalo"""
+    user_id = update.effective_user.id
+    imei = update.message.text.strip()
+    if not imei:
+        await update.message.reply_text("⚠️ IMEI không hợp lệ. Vui lòng gửi lại IMEI:")
+        return
+
+    USER_STATES[user_id] = {"state": "CB_WAITING_COOKIES", "zalo_imei": imei}
+
+    text = (
+        f"✅ Đã nhận IMEI: <code>{html.escape(imei)}</code>\n\n"
+        "🍪 <b>[CHATBOT AI - BƯỚC 2/4] NHẬP COOKIES ZALO</b>\n\n"
+        "Vui lòng gửi Cookies tài khoản Zalo của bạn (chuỗi header hoặc JSON):\n"
+        "<i>(Bắt buộc phải chứa cookie <b>zpw_sek</b>)</i>"
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
+
+
+async def handle_cb_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Nhận cookies, đăng nhập và lấy danh sách nhóm cho Chatbot Zalo"""
+    user_id = update.effective_user.id
+    user_data = USER_STATES.get(user_id, {})
+    cookies_input = update.message.text.strip()
+    parsed_cookies = parse_cookies_input(cookies_input)
+
+    if not parsed_cookies or "zpw_sek" not in parsed_cookies:
+        await update.message.reply_text(
+            "⚠️ Cookies không hợp lệ hoặc thiếu <code>zpw_sek</code>!\n"
+            "Vui lòng copy lại toàn bộ cookie từ <code>chat.zalo.me</code>:",
+            parse_mode="HTML"
+        )
+        return
+
+    imei = user_data.get("zalo_imei")
+    user_data["zalo_cookies"] = parsed_cookies
+
+    status_msg = await update.message.reply_text(
+        f"⏳ Đang kết nối Zalo với IMEI <code>{html.escape(imei)}</code>...",
+        parse_mode="HTML"
+    )
+
+    loop = asyncio.get_running_loop()
+    client, group_list, err = await loop.run_in_executor(None, zalo_login_helper, imei, parsed_cookies)
+
+    if err or not client:
+        err_msg = err or "Lỗi xác thực Zalo"
+        await status_msg.edit_text(
+            f"❌ <b>Đăng nhập Zalo thất bại!</b>\n\n<code>{html.escape(err_msg)}</code>\n\n👉 Thử lại với /chatbotzalo",
+            parse_mode="HTML"
+        )
+        USER_STATES.pop(user_id, None)
+        return
+
+    if not group_list:
+        await status_msg.edit_text("⚠️ Đăng nhập thành công nhưng tài khoản hiện chưa tham gia nhóm nào!")
+        USER_STATES.pop(user_id, None)
+        return
+
+    user_data["state"] = "CB_WAITING_GROUPS"
+    user_data["zalo_client"] = client
+    user_data["zalo_groups"] = group_list
+    user_data["selected_group_ids"] = set()
+    user_data["group_page"] = 0
+
+    reply_markup = build_chatbot_group_keyboard(group_list, set(), page=0)
+    prompt_text = (
+        f"👥 <b>[CHATBOT AI - BƯỚC 3/4] CHỌN NHÓM ĐỂ AI TRẢ LỜI</b>\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        f"🔍 Tìm thấy: <b>{len(group_list)} nhóm</b>\n"
+        "👉 Bấm chọn những nhóm bạn muốn bật AI phản hồi khi được tag @, sau đó bấm <b>'🚀 Tiếp Tục (Nhập API Key)'</b>:"
+    )
+    await status_msg.edit_text(prompt_text, parse_mode="HTML", reply_markup=reply_markup)
+
+
+async def handle_cb_use_saved(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Dùng thông tin tài khoản đã lưu cho Chatbot Zalo"""
+    query = update.callback_query
+    await query.answer()
+
+    user_id = update.effective_user.id
+    saved_cb = get_user_chatbot_config(user_id)
+    saved_auto = get_user_autochat_config(user_id)
+    saved_treo = get_user_saved_config(user_id)
+    candidate = saved_cb if (saved_cb and saved_cb.get("zalo_imei")) else (saved_auto if (saved_auto and saved_auto.get("zalo_imei")) else saved_treo)
+
+    if not candidate:
+        await query.edit_message_text("⚠️ Không tìm thấy cấu hình đã lưu. Vui lòng bắt đầu lại bằng /chatbotzalo")
+        return
+
+    imei = candidate.get("zalo_imei")
+    cookies = candidate.get("zalo_cookies")
+    prev_selected = set(candidate.get("selected_group_ids", []))
+    saved_gemini_key = candidate.get("gemini_key", "")
+
+    status_msg = await query.edit_message_text("⏳ Đang kết nối Zalo bằng tài khoản đã lưu...", parse_mode="HTML")
+
+    loop = asyncio.get_running_loop()
+    client, group_list, err = await loop.run_in_executor(None, zalo_login_helper, imei, cookies)
+
+    if err or not client:
+        err_msg = err or "Lỗi xác thực Zalo"
+        await status_msg.edit_text(
+            f"❌ <b>Không thể kết nối Zalo với Cookies đã lưu!</b>\n\n<code>{html.escape(err_msg)}</code>\n\n"
+            "💡 Cookies có thể đã hết hạn, hãy chọn <b>'🆕 Nhập IMEI & Cookie Mới'</b>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🆕 Nhập IMEI & Cookie Mới", callback_data="cb_start_fresh")]
+            ])
+        )
+        return
+
+    valid_selected = {g["id"] for g in group_list if g["id"] in prev_selected}
+
+    USER_STATES[user_id] = {
+        "state": "CB_WAITING_GROUPS",
+        "zalo_imei": imei,
+        "zalo_cookies": cookies,
+        "zalo_client": client,
+        "zalo_groups": group_list,
+        "selected_group_ids": valid_selected,
+        "group_page": 0,
+        "gemini_key": saved_gemini_key
+    }
+
+    reply_markup = build_chatbot_group_keyboard(group_list, valid_selected, page=0)
+    prompt_text = (
+        f"👥 <b>[CHATBOT AI - BƯỚC 3/4] CHỌN NHÓM ĐỂ AI TRẢ LỜI</b>\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        f"🔍 Tìm thấy: <b>{len(group_list)} nhóm</b> | Đang chọn: <b>{len(valid_selected)} nhóm</b>\n\n"
+        "👉 Bấm chọn nhóm và nhấn <b>'🚀 Tiếp Tục (Nhập API Key)'</b>:"
+    )
+    await status_msg.edit_text(prompt_text, parse_mode="HTML", reply_markup=reply_markup)
+
+
+def build_chatbot_group_keyboard(group_list: List[dict], selected_ids: Set[str], page: int = 0) -> InlineKeyboardMarkup:
+    """Bảng chọn nhóm cho Chatbot AI"""
+    PAGE_SIZE = 8
+    total_pages = max(1, (len(group_list) + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+
+    start_idx = page * PAGE_SIZE
+    end_idx = start_idx + PAGE_SIZE
+    current_groups = group_list[start_idx:end_idx]
+
+    keyboard = []
+    for g in current_groups:
+        gid = g["id"]
+        gname = g["name"]
+        icon = "✅" if gid in selected_ids else "⬜"
+        display_name = f"{icon} {gname[:25]}"
+        keyboard.append([InlineKeyboardButton(display_name, callback_data=f"cb_grp_toggle_{gid}_{page}")])
+
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("⬅️ Trước", callback_data=f"cb_grp_page_{page - 1}"))
+    if total_pages > 1:
+        nav_row.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="cb_grp_noop"))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton("Sau ➡️", callback_data=f"cb_grp_page_{page + 1}"))
+    if nav_row:
+        keyboard.append(nav_row)
+
+    all_selected = (len(selected_ids) == len(group_list)) and (len(group_list) > 0)
+    toggle_all_btn = (
+        InlineKeyboardButton("❌ Bỏ chọn tất cả", callback_data=f"cb_grp_unselect_all_{page}")
+        if all_selected
+        else InlineKeyboardButton("✅ Chọn tất cả nhóm", callback_data=f"cb_grp_select_all_{page}")
+    )
+    keyboard.append([toggle_all_btn])
+
+    keyboard.append([
+        InlineKeyboardButton(f"🚀 Tiếp Tục (Nhập API Key) ({len(selected_ids)} nhóm)", callback_data="cb_grp_confirm")
+    ])
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+async def handle_cb_group_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Xử lý nút bấm chọn nhóm Chatbot AI"""
+    query = update.callback_query
+    await query.answer()
+
+    user_id = update.effective_user.id
+    user_data = USER_STATES.get(user_id, {})
+    data = query.data
+
+    group_list = user_data.get("zalo_groups", [])
+    selected_ids: Set[str] = user_data.setdefault("selected_group_ids", set())
+    page = user_data.get("group_page", 0)
+
+    if data == "cb_grp_noop":
+        return
+
+    if data == "cb_grp_confirm":
+        if not selected_ids:
+            await query.answer("⚠️ Bạn chưa chọn nhóm nào! Vui lòng chọn ít nhất 1 nhóm.", show_alert=True)
+            return
+
+        user_data["state"] = "CB_WAITING_GEMINI_KEY"
+        saved_key = user_data.get("gemini_key") or ""
+
+        keyboard = []
+        if saved_key:
+            keyboard.append([InlineKeyboardButton(f"⚡ Dùng Key Đã Lưu ({saved_key[:8]}...)", callback_data="cb_use_saved_key")])
+        keyboard.append([InlineKeyboardButton("❌ Hủy bỏ", callback_data="refresh_menu")])
+
+        prompt = (
+            f"✅ Đã chọn <b>{len(selected_ids)} nhóm</b>!\n\n"
+            "🔑 <b>[CHATBOT AI - BƯỚC 4/4] NHẬP GEMINI API KEY</b>\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            "Vui lòng gửi <b>Gemini API Key</b> của bạn vào đây:\n"
+            "<i>(Nếu chưa có, bạn có thể lấy miễn phí tại aistudio.google.com/app/apikey)</i>"
+        )
+        try:
+            await query.edit_message_text(prompt, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
+        except BadRequest:
+            pass
+        return
+
+    if data.startswith("cb_grp_toggle_"):
+        parts = data.split("_")
+        gid = parts[3]
+        page = int(parts[4])
+        user_data["group_page"] = page
+
+        if gid in selected_ids:
+            selected_ids.remove(gid)
+        else:
+            selected_ids.add(gid)
+
+    elif data.startswith("cb_grp_page_"):
+        page = int(data.split("_")[3])
+        user_data["group_page"] = page
+
+    elif data.startswith("cb_grp_select_all_"):
+        page = int(data.split("_")[4])
+        user_data["group_page"] = page
+        for g in group_list:
+            selected_ids.add(g["id"])
+
+    elif data.startswith("cb_grp_unselect_all_"):
+        page = int(data.split("_")[4])
+        user_data["group_page"] = page
+        selected_ids.clear()
+
+    reply_markup = build_chatbot_group_keyboard(group_list, selected_ids, page=page)
+    prompt_text = (
+        f"👥 <b>[CHATBOT AI - BƯỚC 3/4] CHỌN NHÓM ĐỂ AI TRẢ LỜI</b>\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        f"🔍 Tìm thấy: <b>{len(group_list)} nhóm</b> | Đang chọn: <b>{len(selected_ids)} nhóm</b>:"
+    )
+    try:
+        await query.edit_message_text(prompt_text, parse_mode="HTML", reply_markup=reply_markup)
+    except BadRequest:
+        pass
+
+
+async def handle_cb_gemini_key_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Nhận Gemini API Key và kích hoạt Chatbot Zalo"""
+    user_id = update.effective_user.id
+    user_data = USER_STATES.get(user_id, {})
+    gemini_key = update.message.text.strip() if update.message else ""
+
+    if not gemini_key:
+        await update.message.reply_text("⚠️ API Key không được để trống. Vui lòng nhập lại:")
+        return
+
+    await activate_chatbot_session(user_id, user_data, gemini_key, update.message)
+
+
+async def handle_cb_use_saved_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Dùng key Gemini đã lưu"""
+    query = update.callback_query
+    await query.answer()
+
+    user_id = update.effective_user.id
+    user_data = USER_STATES.get(user_id, {})
+    gemini_key = user_data.get("gemini_key")
+
+    if not gemini_key:
+        await query.edit_message_text("⚠️ Không tìm thấy key đã lưu. Vui lòng gửi API Key vào đây:")
+        return
+
+    await activate_chatbot_session(user_id, user_data, gemini_key, query.message, is_edit=True)
+
+
+async def activate_chatbot_session(user_id: int, user_data: dict, gemini_key: str, message_obj, is_edit: bool = False):
+    """Kích hoạt và lưu session Chatbot AI Zalo"""
+    client: ZaloAPI = user_data.get("zalo_client")
+    imei = user_data.get("zalo_imei")
+    cookies = user_data.get("zalo_cookies")
+    selected_ids = list(user_data.get("selected_group_ids", set()))
+    group_list = user_data.get("zalo_groups", [])
+
+    if not client or not selected_ids:
+        err_text = "⚠️ Phiên cài đặt bị gián đoạn. Vui lòng thử lại với /chatbotzalo"
+        if is_edit:
+            await message_obj.edit_text(err_text)
+        else:
+            await message_obj.reply_text(err_text)
+        USER_STATES.pop(user_id, None)
+        return
+
+    # Lưu cấu hình vào JSON
+    save_user_chatbot_config(user_id, {
+        "zalo_imei": imei,
+        "zalo_cookies": cookies,
+        "selected_group_ids": selected_ids,
+        "gemini_key": gemini_key
+    })
+
+    # Dừng phiên cũ nếu có
+    if user_id in ACTIVE_CHATBOT_SESSIONS:
+        try:
+            ACTIVE_CHATBOT_SESSIONS[user_id]["running"] = False
+            ACTIVE_CHATBOT_SESSIONS[user_id]["client"].is_running = False
+        except Exception:
+            pass
+
+    # Bắt đầu luồng lắng nghe Zalo WebSocket
+    start_chatbot_thread(user_id, client, selected_ids, gemini_key)
+
+    chosen_groups_info = [g for g in group_list if g["id"] in selected_ids]
+    names_preview = "\n".join([f"• <b>{html.escape(g['name'])}</b>" for g in chosen_groups_info[:5]])
+    if len(chosen_groups_info) > 5:
+        names_preview += f"\n<i>... và {len(chosen_groups_info) - 5} nhóm khác</i>"
+
+    success_text = (
+        "🧠 <b>ĐÃ BẬT CHATBOT AI ZALO THÀNH CÔNG!</b>\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        f"👥 Nhóm áp dụng: <b>{len(selected_ids)} nhóm</b>\n"
+        f"{names_preview}\n"
+        "🤖 Bộ não: <b>Google Gemini AI (1.5 Flash)</b>\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "👉 <b>Cơ chế hoạt động:</b> Khi bất kỳ ai trong các nhóm trên tag <b>@tên Zalo của bạn</b> kèm câu hỏi,\n"
+        "Bot Zalo sẽ tự động dùng Gemini AI để trả lời và phản hồi tag lại người đó ngay lập tức!\n\n"
+        "<i>(Gõ /stopchatbot hoặc bấm nút bên dưới bất cứ lúc nào để tắt)</i>"
+    )
+    keyboard = [
+        [InlineKeyboardButton("🛑 Tắt AI Chatbot", callback_data="stop_chatbot")],
+        [InlineKeyboardButton("📱 Mở Menu", callback_data="refresh_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if is_edit:
+        await message_obj.edit_text(success_text, parse_mode="HTML", reply_markup=reply_markup)
+    else:
+        await message_obj.reply_text(success_text, parse_mode="HTML", reply_markup=reply_markup)
+
+    USER_STATES.pop(user_id, None)
+
+
+async def stop_chatbot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Tắt tính năng Chatbot AI Zalo"""
+    user_id = update.effective_user.id
+    if user_id in ACTIVE_CHATBOT_SESSIONS and ACTIVE_CHATBOT_SESSIONS[user_id].get("running"):
+        ACTIVE_CHATBOT_SESSIONS[user_id]["running"] = False
+        try:
+            ACTIVE_CHATBOT_SESSIONS[user_id]["client"].is_running = False
+            ws = getattr(ACTIVE_CHATBOT_SESSIONS[user_id]["client"], "ws", None)
+            if ws:
+                ws.close()
+        except Exception:
+            pass
+        del ACTIVE_CHATBOT_SESSIONS[user_id]
+        msg = "🛑 <b>Đã tắt tính năng Chatbot AI Zalo!</b>\nBot sẽ không còn tự động trả lời khi được tag @ nữa."
+    else:
+        msg = "ℹ️ Tính năng Chatbot AI Zalo hiện chưa được bật."
+
+    keyboard = [
+        [InlineKeyboardButton("🧠 Bật Lại AI Chatbot", callback_data="start_chatbot")],
+        [InlineKeyboardButton("📱 Mở Menu", callback_data="refresh_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.message.reply_text(msg, parse_mode="HTML", reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(msg, parse_mode="HTML", reply_markup=reply_markup)
+
+
+async def show_chatbot_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Xem trạng thái Chatbot AI Zalo"""
+    query = update.callback_query
+    if query:
+        await query.answer()
+
+    user_id = update.effective_user.id
+    session = ACTIVE_CHATBOT_SESSIONS.get(user_id)
+
+    if not session or not session.get("running"):
+        text = "⚪ <b>Chatbot AI Zalo hiện đang TẮT.</b>"
+        keyboard = [
+            [InlineKeyboardButton("🧠 Bật Chatbot AI Ngay", callback_data="start_chatbot")],
+            [InlineKeyboardButton("🔙 Quay lại Menu", callback_data="refresh_menu")]
+        ]
+    else:
+        num = len(session.get("group_ids", []))
+        text = (
+            "🧠 <b>TRẠNG THÁI CHATBOT AI ZALO (ĐANG HOẠT ĐỘNG)</b>\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            f"👥 Đang theo dõi và trả lời trên: <b>{num} nhóm</b>\n"
+            "🤖 Bộ não: <b>Google Gemini AI</b>\n"
+            "⚡ Trạng thái: Sẵn sàng nhận diện tag @ và trả lời tự động!"
+        )
+        keyboard = [
+            [InlineKeyboardButton("🛑 Tắt AI Chatbot", callback_data="stop_chatbot")],
+            [InlineKeyboardButton("🔙 Quay lại Menu", callback_data="refresh_menu")]
+        ]
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    if query:
+        try:
+            await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=reply_markup)
+        except BadRequest:
+            pass
+    else:
+        await update.message.reply_text(text=text, parse_mode="HTML", reply_markup=reply_markup)
+
 
 async def autochat_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Bắt đầu thiết lập Auto Chat: Kiểm tra xem đã có cấu hình lưu hay chưa"""
@@ -2044,6 +2746,14 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif st == "WAITING_NEW_DELAY":
         return await handle_new_delay_input(update, context)
 
+    # 1.5. Các bước nhập thông tin Chatbot AI Zalo
+    if st == "CB_WAITING_IMEI":
+        return await handle_cb_imei(update, context)
+    elif st == "CB_WAITING_COOKIES":
+        return await handle_cb_cookies(update, context)
+    elif st == "CB_WAITING_GEMINI_KEY":
+        return await handle_cb_gemini_key_input(update, context)
+
     # 2. Các bước nhập thông tin thiết lập Auto Chat
     if st == "AUTOCHAT_WAITING_IMEI":
         return await handle_autochat_imei(update, context)
@@ -2078,7 +2788,22 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     # Các nút chính từ menu
-    if data == "start_autochat":
+    if data == "start_chatbot":
+        return await chatbot_start(update, context)
+    elif data == "cb_start_fresh":
+        return await chatbot_start_fresh(update, context)
+    elif data == "cb_use_saved":
+        return await handle_cb_use_saved(update, context)
+    elif data == "cb_use_saved_key":
+        return await handle_cb_use_saved_key(update, context)
+    elif data == "stop_chatbot":
+        return await stop_chatbot_command(update, context)
+    elif data == "chatbot_status":
+        return await show_chatbot_status(update, context)
+    elif data.startswith("cb_grp_"):
+        return await handle_cb_group_callback(update, context)
+
+    elif data == "start_autochat":
         return await autochat_start(update, context)
     elif data == "start_autochat_fresh":
         return await autochat_start_fresh(update, context)
@@ -2161,6 +2886,8 @@ def main():
     # Đăng ký các lệnh
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("menu", menu_command))
+    app.add_handler(CommandHandler("chatbotzalo", chatbot_start))
+    app.add_handler(CommandHandler("stopchatbot", stop_chatbot_command))
     app.add_handler(CommandHandler("autochat", autochat_start))
     app.add_handler(CommandHandler("stopautochat", stop_autochat_command))
     app.add_handler(CommandHandler("tainhac", tainhac_start))
