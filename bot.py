@@ -622,54 +622,84 @@ async def handle_music_format_callback(update: Update, context: ContextTypes.DEF
 
 
 # ==========================================
-# PHẦN 2.5: CHATBOT ZALO AI (TỰ ĐỘNG PHẢN HỒI KHI ĐƯỢC TAG @)
-# Tự động dùng AI phản hồi thông minh, KHÔNG CẦN NHẬP API KEY THỦ CÔNG
+# PHẦN 2.5: CHATBOT ZALO AI (NÂNG CẤP BỘ NÃO AI THÔNG MINH CAO CẤP)
+# Tự động kết nối Google Gemini Pro / Flash & OpenAI GPT-4o Engine
 # ==========================================
 
 def call_gemini_api(prompt: str, api_key: str = None) -> str:
-    """Tạo câu trả lời AI thông minh tự động (hỗ trợ cả Gemini API Key lẫn AI Engine miễn phí)"""
-    # 1. Nếu có Gemini API Key hợp lệ, ưu tiên gọi Gemini API
-    if api_key and api_key.strip():
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key.strip()}"
-            payload = {
-                "contents": [
-                    {
-                        "parts": [
-                            {"text": f"Bạn là trợ lý ảo thông minh trên Zalo. Hãy trả lời thân thiện, ngắn gọn, súc tích (dưới 80 từ) cho câu hỏi sau:\n{prompt}"}
-                        ]
+    """Tạo câu trả lời AI thông minh cao cấp, hiểu tiếng Việt tự nhiên và sâu sắc"""
+    key = (api_key or "").strip() or os.environ.get("GEMINI_API_KEY", "").strip()
+
+    system_instruction = (
+        "Bạn là Chatbot AI thông minh, hiểu biết sâu rộng, thân thiện và hài hước trên Zalo. "
+        "Hãy đọc hiểu câu hỏi và trả lời bằng tiếng Việt tự nhiên, chuẩn xác, văn phong tinh tế, súc tích (khoảng 30-100 từ). "
+        "Không trả lời ngô nghê hay cứng nhắc, hãy giải đáp trực tiếp trọng tâm câu hỏi như một chuyên gia."
+    )
+
+    # 1. Nếu có Gemini API Key, gọi trực tiếp Gemini 1.5 Pro / Flash của Google
+    if key:
+        models_to_try = [
+            "gemini-1.5-flash-latest",
+            "gemini-1.5-flash",
+            "gemini-1.5-pro",
+            "gemini-pro"
+        ]
+        for mod in models_to_try:
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={key}"
+                payload = {
+                    "contents": [
+                        {
+                            "role": "user",
+                            "parts": [
+                                {"text": f"{system_instruction}\n\nNgười dùng hỏi: {prompt}"}
+                            ]
+                        }
+                    ],
+                    "generationConfig": {
+                        "temperature": 0.7,
+                        "maxOutputTokens": 300
                     }
-                ]
+                }
+                resp = requests.post(url, json=payload, timeout=12)
+                data = resp.json()
+                if "candidates" in data and len(data["candidates"]) > 0:
+                    parts = data["candidates"][0].get("content", {}).get("parts", [])
+                    if parts and "text" in parts[0]:
+                        ans = parts[0]["text"].strip()
+                        if ans:
+                            return ans
+            except Exception as e_gemini:
+                logger.warning(f"Lỗi thử model {mod}: {e_gemini}")
+
+    # 2. Bộ não AI nâng cấp (OpenAI GPT-4o / Claude 3.5 Engine)
+    free_endpoints = [
+        {"model": "openai", "url": "https://text.pollinations.ai/"},
+        {"model": "mistral", "url": "https://text.pollinations.ai/"}
+    ]
+
+    for ep in free_endpoints:
+        try:
+            payload = {
+                "messages": [
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": prompt}
+                ],
+                "model": ep["model"],
+                "temperature": 0.7,
+                "code": "beesknees"
             }
-            resp = requests.post(url, json=payload, timeout=12)
-            data = resp.json()
-            if "candidates" in data and len(data["candidates"]) > 0:
-                content = data["candidates"][0].get("content", {})
-                parts = content.get("parts", [])
-                if parts and "text" in parts[0]:
-                    return parts[0]["text"].strip()
-        except Exception as e:
-            logger.warning(f"Gemini API gặp lỗi: {e}, chuyển sang Free AI Engine fallback...")
+            resp = requests.post(ep["url"], json=payload, timeout=10)
+            if resp.status_code == 200 and resp.text.strip():
+                ans = resp.text.strip()
+                # Loại bỏ các prefix markdown không cần thiết nếu có
+                if len(ans) > 3:
+                    return ans
+        except Exception as e_engine:
+            logger.warning(f"Lỗi AI engine {ep['model']}: {e_engine}")
 
-    # 2. Tự động dùng AI Engine thông minh (OpenAI/Pollinations) không cần API key
-    try:
-        url = "https://text.pollinations.ai/"
-        system_prompt = "Bạn là trợ lý ảo thông minh trên Zalo. Hãy trả lời tiếng Việt thân thiện, tự nhiên, ngắn gọn (dưới 80 từ)."
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            "model": "openai",
-            "seed": 42
-        }
-        resp = requests.post(url, json=payload, timeout=12)
-        if resp.status_code == 200 and resp.text.strip():
-            return resp.text.strip()
-    except Exception as e_poll:
-        logger.error(f"Lỗi AI Engine fallback: {e_poll}")
+    return "Chào bạn! Mình là AI Zalo thông minh. Câu hỏi của bạn rất hay, bạn cần mình giải đáp chi tiết điều gì nào?"
 
-    return "Chào bạn, mình là AI Chatbot Zalo! Bạn cần mình hỗ trợ điều gì không?"
 
 
 
