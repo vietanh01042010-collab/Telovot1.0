@@ -29,6 +29,7 @@ import zlapi
 from zlapi import ZaloAPI, _util
 import zlapi._state
 from zlapi.models import Message, ThreadType, MessageStyle, MultiMsgStyle
+from aiohttp import web
 
 # Logging configuration
 logging.basicConfig(
@@ -2121,6 +2122,28 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await handle_format_callback(update, context)
 
 
+async def run_dummy_web_server():
+    """Khởi chạy HTTP server mini để Render Free Web Service nhận diện PORT và không bao giờ tắt bot"""
+    async def handle_ping(request):
+        return web.Response(text="Bot Telegram is running healthy 24/7!")
+
+    server_app = web.Application()
+    server_app.router.add_get("/", handle_ping)
+    server_app.router.add_get("/health", handle_ping)
+
+    port = int(os.environ.get("PORT", 8080))
+    runner = web.AppRunner(server_app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info(f"Đã mở Dummy Web Server trên port {port} để Render Web Service luôn Live 24/7.")
+
+
+async def post_init(application):
+    """Chạy song song HTTP Web Server cùng với Bot Polling"""
+    asyncio.create_task(run_dummy_web_server())
+
+
 def main():
     print("Khởi động Telegram Bot...")
     request = HTTPXRequest(
@@ -2129,7 +2152,7 @@ def main():
         write_timeout=60.0,
         media_write_timeout=120.0,
     )
-    app = ApplicationBuilder().token(BOT_TOKEN).request(request).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).request(request).post_init(post_init).build()
 
     # Đăng ký các lệnh
     app.add_handler(CommandHandler("start", start_command))
